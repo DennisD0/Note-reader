@@ -38,7 +38,7 @@ const PIANO_SAMPLE_URLS: Record<string, string> = {
 };
 
 interface PartEvent {
-  time: number;
+  time: string; // Tone.js tick notation e.g. "192i" — plain numbers are seconds, not ticks
   pitch: string;
   durationTicks: number;
 }
@@ -58,6 +58,8 @@ interface EngineEntry {
  */
 export class AudioEngine {
   private entries = new Map<string, EngineEntry>();
+  /** Live semitone transpose applied to every scheduled note (12 = +1 octave). */
+  private transpose = 0;
 
   /**
    * (Re)builds the playback graph for the given parts. Resolves once all
@@ -94,14 +96,20 @@ export class AudioEngine {
             }).connect(channel);
 
             const events: PartEvent[] = part.notes.map((note) => ({
-              time: note.onsetTicks,
+              time: `${note.onsetTicks}i`,
               pitch: note.pitch,
               durationTicks: note.durationTicks,
             }));
 
             const tonePart = new Tone.Part<PartEvent>((time, value) => {
               const durationSec = Tone.Ticks(value.durationTicks).toSeconds();
-              sampler.triggerAttackRelease(value.pitch, durationSec, time);
+              // Read transpose live so the octave control takes effect mid-play
+              // without re-scheduling the part.
+              const pitch =
+                this.transpose === 0
+                  ? value.pitch
+                  : Tone.Frequency(value.pitch).transpose(this.transpose).toNote();
+              sampler.triggerAttackRelease(pitch, durationSec, time);
             }, events);
             tonePart.start(0);
 
@@ -109,6 +117,15 @@ export class AudioEngine {
           })
       )
     );
+  }
+
+  /** Shift every note by `semitones` (e.g. 12 = up one octave). Live. */
+  setTranspose(semitones: number): void {
+    this.transpose = semitones;
+  }
+
+  getTranspose(): number {
+    return this.transpose;
   }
 
   setMute(id: string, mute: boolean): void {
