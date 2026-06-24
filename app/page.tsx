@@ -32,8 +32,9 @@ const HIGHLIGHT_BORDER = "rgba(59, 130, 246, 0.55)";
 /** Red tint for the notes inside the highlighted measure. */
 const NOTE_RED = "#ef4444";
 
-/** Pre-processed demo score so the app can be tried instantly, no OMR wait. */
-const DEMO_URL = "/presets/remember-me.mxl";
+/** Pre-processed demo score so the app can be tried instantly, no OMR wait.
+ *  The .xml carries the work title and tempo (added back after OMR). */
+const DEMO_URL = "/presets/remember-me.xml";
 const DEMO_NAME = "기억하라 (Remember Me) — demo";
 
 const FILTER_LABELS: Record<VoiceFilter, string> = {
@@ -95,6 +96,9 @@ export default function Home() {
   // Tick at which each measure begins, for mapping playback time → measure.
   const measureStartTicksRef = useRef<number[]>([]);
   const currentMeasureRef = useRef(-1);
+  // Sorted note onsets (ticks), for mapping playback time → the playing note.
+  const stepOnsetsRef = useRef<number[]>([]);
+  const currentOnsetRef = useRef(-1);
   // Live mirrors of state read inside rAF / observer callbacks.
   const partsRef = useRef<ScorePart[]>([]);
   const selectedRef = useRef<VoiceFilter[]>([]);
@@ -205,13 +209,19 @@ export default function Home() {
     }
     overlay.replaceChildren(fragment);
 
-    // Redden the noteheads in the highlighted measure on the selected staves.
+    // Redden only the note(s) actually sounding now: the staff entry on each
+    // selected staff whose onset matches the current playback position.
+    const onset = currentOnsetRef.current;
     const measures = osmdRef.current?.GraphicSheet?.MeasureList?.[measureIndex];
-    if (measures) {
+    if (measures && onset >= 0) {
       type GNote = { getSVGGElement?: () => SVGGElement | null };
       for (const staff of staffIndices) {
         const measure = measures[staff];
         for (const entry of measure?.staffEntries ?? []) {
+          const entryTick = Math.round(
+            entry.getAbsoluteTimestamp().RealValue * TICKS_PER_WHOLE_NOTE
+          );
+          if (entryTick !== onset) continue;
           for (const voiceEntry of entry.graphicalVoiceEntries ?? []) {
             for (const note of voiceEntry.notes ?? []) {
               const el = (note as unknown as GNote).getSVGGElement?.();
@@ -231,7 +241,11 @@ export default function Home() {
     if (autoScroll) firstBox?.scrollIntoView({ block: "nearest" });
   }, []);
 
-  /** Map a playback position (ticks) to its measure and redraw if it changed. */
+  /**
+   * Map a playback position (ticks) to its measure (for the box) and to the
+   * currently-sounding note onset (for the red note), and redraw if either
+   * changed.
+   */
   const syncHighlight = useCallback(
     (posTicks: number) => {
       const starts = measureStartTicksRef.current;
@@ -241,8 +255,19 @@ export default function Home() {
         if (starts[i] <= posTicks) measure = i;
         else break;
       }
-      if (measure === currentMeasureRef.current) return;
+
+      const onsets = stepOnsetsRef.current;
+      let onset = onsets.length ? onsets[0] : -1;
+      for (let i = 0; i < onsets.length; i++) {
+        if (onsets[i] <= posTicks) onset = onsets[i];
+        else break;
+      }
+
+      if (measure === currentMeasureRef.current && onset === currentOnsetRef.current) {
+        return;
+      }
       currentMeasureRef.current = measure;
+      currentOnsetRef.current = onset;
       drawHighlights(true);
     },
     [drawHighlights]
@@ -262,6 +287,7 @@ export default function Home() {
       setIsPlaying(false);
       setPositionSec(0);
       currentMeasureRef.current = 0;
+      currentOnsetRef.current = stepOnsetsRef.current[0] ?? -1;
       drawHighlights();
       cancelLoop();
       return;
@@ -302,18 +328,21 @@ export default function Home() {
       osmd.render();
       osmd.cursor?.hide();
 
-      // Walk the score once to learn the tick where each measure begins, so a
-      // playback position can be mapped to the measure to highlight.
+      // Walk the score once to learn the tick where each measure begins (for
+      // the measure box) and every distinct note onset (for the playing-note).
       const measureStartTicks: number[] = [];
+      const onsetSet = new Set<number>();
       osmd.cursor.reset();
       let guard = 0;
       while (!osmd.cursor.Iterator.EndReached && guard < 100000) {
         const measure = osmd.cursor.Iterator.CurrentMeasureIndex;
-        const tick =
-          osmd.cursor.Iterator.currentTimeStamp.RealValue * TICKS_PER_WHOLE_NOTE;
+        const tick = Math.round(
+          osmd.cursor.Iterator.currentTimeStamp.RealValue * TICKS_PER_WHOLE_NOTE
+        );
         if (measureStartTicks[measure] === undefined) {
           measureStartTicks[measure] = tick;
         }
+        onsetSet.add(tick);
         osmd.cursor.next();
         guard += 1;
       }
@@ -325,7 +354,9 @@ export default function Home() {
         else last = measureStartTicks[i];
       }
       measureStartTicksRef.current = measureStartTicks;
+      stepOnsetsRef.current = [...onsetSet].sort((a, b) => a - b);
       currentMeasureRef.current = 0;
+      currentOnsetRef.current = stepOnsetsRef.current[0] ?? -1;
 
       buildMeasureRects();
 
@@ -350,6 +381,12 @@ export default function Home() {
       const scoreTempo = Math.round(osmd.Sheet?.DefaultStartTempoInBpm ?? 0);
       const startBpm =
         scoreTempo >= 20 && scoreTempo <= 400 ? scoreTempo : DEFAULT_BPM;
+
+      // Surface the title printed on the score (the "music name") when present.
+      const scoreTitle = osmd.Sheet?.TitleString?.trim();
+      if (scoreTitle && !/^untitled/i.test(scoreTitle)) {
+        setFileName(scoreTitle);
+      }
 
       const engine = new AudioEngine();
       setStatusMsg("Loading piano samples...");
@@ -422,7 +459,9 @@ export default function Home() {
       coloredNotesRef.current = [];
       measureRectsRef.current = [];
       measureStartTicksRef.current = [];
+      stepOnsetsRef.current = [];
       currentMeasureRef.current = -1;
+      currentOnsetRef.current = -1;
       partsRef.current = [];
       selectedRef.current = [];
       setParts([]);
@@ -500,6 +539,7 @@ export default function Home() {
     setIsPlaying(false);
     setPositionSec(0);
     currentMeasureRef.current = 0;
+    currentOnsetRef.current = stepOnsetsRef.current[0] ?? -1;
     drawHighlights();
     cancelLoop();
   }, [drawHighlights, cancelLoop]);
