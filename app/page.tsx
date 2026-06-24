@@ -85,6 +85,13 @@ interface Rect {
   h: number;
 }
 
+/** A stable client-side id for a Song. */
+function newId(): string {
+  return typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random()}`;
+}
+
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
   const m = Math.floor(seconds / 60);
@@ -126,9 +133,10 @@ export default function Home() {
   // Sorted note onsets (ticks), for mapping playback time → the playing note.
   const stepOnsetsRef = useRef<number[]>([]);
   const currentOnsetRef = useRef(-1);
-  // Live mirrors of state read inside rAF / observer callbacks.
+  // Live mirrors of state read inside rAF / observer / async callbacks.
   const partsRef = useRef<ScorePart[]>([]);
   const selectedRef = useRef<VoiceFilter[]>([]);
+  const songsRef = useRef<Song[]>([]);
   // SVG notes currently tinted red, so they can be reverted on the next move.
   const coloredNotesRef = useRef<SVGElement[]>([]);
   // Rebuilds highlight geometry whenever OSMD re-renders the score SVG.
@@ -155,6 +163,9 @@ export default function Home() {
   useEffect(() => {
     selectedRef.current = selectedRoles;
   }, [selectedRoles]);
+  useEffect(() => {
+    songsRef.current = songs;
+  }, [songs]);
 
   /** Recompute per-measure, per-staff pixel rectangles from OSMD's layout. */
   const buildMeasureRects = useCallback(() => {
@@ -566,17 +577,16 @@ export default function Home() {
     [activeSongId, stage, resetForLoad, loadScore]
   );
 
-  /** Add the demo to the library and start playing it. */
+  /** Add the demo to the library (once) and start playing it. */
   const handleDemo = useCallback(async () => {
-    const id =
-      typeof crypto !== "undefined" && crypto.randomUUID
-        ? crypto.randomUUID()
-        : String(Date.now());
-    setSongs((prev) =>
-      prev.some((s) => s.url === DEMO_URL)
-        ? prev
-        : [...prev, { id, name: DEMO_NAME, status: "ready", url: DEMO_URL }]
-    );
+    const existing = songsRef.current.find((s) => s.url === DEMO_URL);
+    const id = existing?.id ?? newId();
+    if (!existing) {
+      setSongs((prev) => [
+        ...prev,
+        { id, name: DEMO_NAME, status: "ready", url: DEMO_URL },
+      ]);
+    }
     setActiveSongId(id);
     resetForLoad(DEMO_NAME);
     await loadScore(DEMO_URL);
@@ -594,10 +604,7 @@ export default function Home() {
       );
 
       const newSongs: Song[] = files.map((file) => ({
-        id:
-          typeof crypto !== "undefined" && crypto.randomUUID
-            ? crypto.randomUUID()
-            : `${Date.now()}-${Math.random()}`,
+        id: newId(),
         name: file.name,
         status: "uploading" as const,
       }));
@@ -616,12 +623,21 @@ export default function Home() {
     });
     setActiveSongId((cur) => {
       if (cur !== id) return cur;
-      // Removing the song that's loaded in the player: tear the player down.
+      // Removing the song that's loaded in the player: tear the player down and
+      // clear the rendered score + highlights so nothing stale lingers.
       cancelLoop();
+      resizeObsRef.current?.disconnect();
       engineRef.current?.dispose();
       engineRef.current = null;
+      osmdRef.current?.clear();
+      osmdRef.current = null;
+      // clear() empties the SVG but leaves a tall, blank element behind; drop it.
+      containerRef.current?.replaceChildren();
+      overlayRef.current?.replaceChildren();
       setStage("idle");
       setIsPlaying(false);
+      setParts([]);
+      setSelectedRoles([]);
       setFileName(null);
       return null;
     });
