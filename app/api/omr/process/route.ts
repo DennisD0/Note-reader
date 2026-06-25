@@ -4,6 +4,7 @@ import path from "path";
 import { NextRequest, NextResponse } from "next/server";
 import { runAudiveris } from "@/lib/audiveris";
 import { createJob, updateJob } from "@/lib/jobs";
+import { isImageFile, preprocessImage } from "@/lib/image-preprocess";
 
 const DATA_DIR = path.join(process.cwd(), "omr-data");
 
@@ -22,9 +23,18 @@ export async function POST(req: NextRequest) {
   await fs.mkdir(inputDir, { recursive: true });
   await fs.mkdir(outputDir, { recursive: true });
 
-  const ext = path.extname(file.name) || "";
+  // Photos/scans get cleaned up before OMR; PDFs go to Audiveris untouched.
+  let buffer: Uint8Array = Buffer.from(await file.arrayBuffer());
+  let ext = path.extname(file.name) || "";
+  if (isImageFile(file.name)) {
+    const cleaned = await preprocessImage(buffer);
+    if (cleaned) {
+      buffer = cleaned;
+      ext = ".png";
+    }
+  }
   const inputPath = path.join(inputDir, `score${ext}`);
-  await fs.writeFile(inputPath, Buffer.from(await file.arrayBuffer()));
+  await fs.writeFile(inputPath, buffer);
 
   createJob({
     id: jobId,

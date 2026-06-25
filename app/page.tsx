@@ -858,7 +858,7 @@ export default function Home() {
             </button>
           </div>
           <p className="text-xs text-stone-400">
-            Pick up to {MAX_UPLOAD} hymns at once (image, PDF, or MusicXML). They
+            Pick up to {MAX_UPLOAD}{" "}hymns at once (image, PDF, or MusicXML). They
             upload in the background — play one as soon as it&apos;s ready while the
             rest keep processing. Or tap{" "}
             <span className="font-semibold text-blue-900">Try the demo</span> for an

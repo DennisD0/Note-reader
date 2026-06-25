@@ -79,46 +79,53 @@ export class AudioEngine {
 
     let loaded = 0;
     const total = scoreParts.length;
+    onLoadProgress?.(0, total);
 
-    await Promise.all(
-      scoreParts.map(
-        (part) =>
-          new Promise<void>((resolve) => {
-            const channel = new Tone.Channel().toDestination();
-            const sampler = new Tone.Sampler({
-              urls: PIANO_SAMPLE_URLS,
-              baseUrl: SALAMANDER_BASE_URL,
-              release: 1,
-              onload: () => {
-                loaded += 1;
-                onLoadProgress?.(loaded, total);
-                resolve();
-              },
-            }).connect(channel);
+    for (const part of scoreParts) {
+      const channel = new Tone.Channel().toDestination();
+      const sampler = new Tone.Sampler({
+        urls: PIANO_SAMPLE_URLS,
+        baseUrl: SALAMANDER_BASE_URL,
+        release: 1,
+        // onload feeds the progress bar, but is NOT what we wait on: several
+        // samplers share the same (often cached) sample URLs, and one sampler's
+        // onload can fail to fire on a cache hit after a dispose — which used to
+        // hang song-switching at "n-1/n". We wait on Tone.loaded() instead.
+        onload: () => {
+          loaded += 1;
+          onLoadProgress?.(loaded, total);
+        },
+      }).connect(channel);
 
-            const events: PartEvent[] = part.notes.map((note) => ({
-              time: `${note.onsetTicks}i`,
-              onsetTicks: note.onsetTicks,
-              pitch: note.pitch,
-              durationTicks: note.durationTicks,
-            }));
+      const events: PartEvent[] = part.notes.map((note) => ({
+        time: `${note.onsetTicks}i`,
+        onsetTicks: note.onsetTicks,
+        pitch: note.pitch,
+        durationTicks: note.durationTicks,
+      }));
 
-            const tonePart = new Tone.Part<PartEvent>((time, value) => {
-              const durationSec = Tone.Ticks(value.durationTicks).toSeconds();
-              // Read transpose live so the octave control takes effect mid-play
-              // without re-scheduling the part.
-              const pitch =
-                this.transpose === 0
-                  ? value.pitch
-                  : Tone.Frequency(value.pitch).transpose(this.transpose).toNote();
-              sampler.triggerAttackRelease(pitch, durationSec, time);
-            }, events);
-            tonePart.start(0);
+      const tonePart = new Tone.Part<PartEvent>((time, value) => {
+        const durationSec = Tone.Ticks(value.durationTicks).toSeconds();
+        // Read transpose live so the octave control takes effect mid-play
+        // without re-scheduling the part.
+        const pitch =
+          this.transpose === 0
+            ? value.pitch
+            : Tone.Frequency(value.pitch).transpose(this.transpose).toNote();
+        sampler.triggerAttackRelease(pitch, durationSec, time);
+      }, events);
+      tonePart.start(0);
 
-            this.entries.set(part.id, { sampler, channel, part: tonePart, events });
-          })
-      )
-    );
+      this.entries.set(part.id, { sampler, channel, part: tonePart, events });
+    }
+
+    // Resolve when every sample buffer has loaded, with a safety timeout so a
+    // stuck/duplicate load can never hang the player indefinitely.
+    await Promise.race([
+      Tone.loaded(),
+      new Promise<void>((resolve) => setTimeout(resolve, 20000)),
+    ]);
+    onLoadProgress?.(total, total);
   }
 
   /** Shift every note by `semitones` (e.g. 12 = up one octave). Live. */
