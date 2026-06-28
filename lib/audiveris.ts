@@ -325,15 +325,17 @@ export function runAudiveris(
   return new Promise((resolve, reject) => {
     const isPhoto = /\.(?:avif|gif|jpe?g|png|tiff?|webp)$/i.test(inputPath);
 
-    // Enable OCR when the language data is present: point Tesseract at it and
-    // ask for Korean + English (these are Korean/English hymnals). Without the
-    // data, run as before (no text OCR) rather than fail.
+    // We never use lyrics for playback, so don't spend time recognizing them.
+    // The dominant cost on these bilingual hymnals is Korean text OCR over every
+    // lyric line — drop it entirely (English only). Keeping light English text
+    // detection still lets Audiveris classify a row as words vs. notes, which
+    // protects note accuracy; the recognized text is discarded (lyrics=false).
     const hasOcr = existsSync(TESSDATA_DIR);
     const args = [...AUDIVERIS_JAVA_ARGS, "-batch", "-export"];
     if (hasOcr) {
       args.push(
         "-constant",
-        "org.audiveris.omr.text.Language$Constants.defaultSpecification=kor+eng"
+        "org.audiveris.omr.text.Language$Constants.defaultSpecification=eng"
       );
     }
     args.push(
